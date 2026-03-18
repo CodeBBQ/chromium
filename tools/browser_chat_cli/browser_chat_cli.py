@@ -2,27 +2,28 @@
 # Copyright 2025 The Chromium Authors
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
-"""CLI tool for chatting via an open browser messenger tab.
+"""CLI tool for chatting via an open browser tab.
 
 Connects to a running Chrome instance using the Chrome DevTools Protocol (CDP),
-injects a text message into a messenger tab's input field, sends it, and waits
-for the reply to appear in the chat before returning it.
+injects a text message into the chat input field of a browser tab, sends it,
+and waits for the reply to appear in the conversation.  Works with any web
+page that has a chat-like interface.
 
 Prerequisite – start Chrome with remote debugging enabled:
   chrome --remote-debugging-port=9222
 
 Usage examples:
-  # Send one message and print the response:
-  python3 browser_chat_cli.py --message "Hello!" --tab "web.whatsapp.com"
-
-  # Interactive (REPL) chat mode:
-  python3 browser_chat_cli.py --interactive --tab "web.telegram.org"
-
-  # List all open tabs:
+  # List all open tabs to find the one to target:
   python3 browser_chat_cli.py --list-tabs
 
+  # Send one message and print the response:
+  python3 browser_chat_cli.py --message "Hello!" --tab "my-chat-site.com"
+
+  # Interactive (REPL) chat mode:
+  python3 browser_chat_cli.py --interactive --tab "my-chat-site.com"
+
   # Use explicit CSS selectors for precision:
-  python3 browser_chat_cli.py --message "Hi" \\
+  python3 browser_chat_cli.py --message "Hi" --tab "my-chat-site.com" \\
       --input-selector "div[contenteditable='true']" \\
       --response-selector ".message-text"
 """
@@ -48,20 +49,6 @@ _DEFAULT_PORT = 9222
 
 # Default seconds to wait for a response before giving up.
 _DEFAULT_RESPONSE_TIMEOUT = 30.0
-
-# Known messenger hostnames for auto-detection.
-_KNOWN_MESSENGERS = [
-    'web.whatsapp.com',
-    'web.telegram.org',
-    'messenger.com',
-    'discord.com',
-    'slack.com',
-    'teams.microsoft.com',
-    'signal.me',
-    'chat.google.com',
-    'element.io',
-    'matrix.to',
-]
 
 # How often to re-evaluate the DOM when polling for a new reply (seconds).
 # 250 ms balances responsiveness with CDP round-trip overhead: polling faster
@@ -397,11 +384,11 @@ def list_tabs(port: int) -> list[dict]:
 
 def find_tab(tabs: list[dict],
              pattern: Optional[str] = None) -> Optional[dict]:
-    """Find the best tab for chat injection.
+    """Find the target tab for chat injection.
 
     If *pattern* is given, the first page tab whose URL or title contains the
     pattern (case-insensitive) is returned.  If *pattern* is omitted, the
-    function auto-detects common messenger tabs based on known hostnames.
+    first non-internal page tab is returned.
 
     Args:
         tabs: Tab list as returned by :func:`list_tabs`.
@@ -419,13 +406,6 @@ def find_tab(tabs: list[dict],
                     or pattern_lower in tab.get('title', '').lower()):
                 return tab
         return None
-
-    # Auto-detect known messenger sites.
-    for tab in page_tabs:
-        url = tab.get('url', '').lower()
-        for hostname in _KNOWN_MESSENGERS:
-            if hostname in url:
-                return tab
 
     # Fall back to the first non-chrome/about page.
     for tab in page_tabs:
@@ -448,27 +428,21 @@ def _js_snapshot_messages(response_selector: Optional[str]) -> str:
                 f'.map(e => (e.innerText || e.textContent || "").trim())'
                 f'.filter(Boolean)')
 
-    # Generic heuristic selectors ordered by specificity.
+    # Generic heuristics that work for any chat-like page.
     return r"""
 (function() {
   const candidates = [
-    /* WhatsApp Web */
-    '[data-testid="msg-container"] .copyable-text',
-    /* Telegram Web */
-    '.message-text-content',
-    /* Google Chat */
-    '[data-message-id]',
-    /* Discord */
-    '[class*="messageContent"]',
-    /* Slack */
-    '[data-qa="message_text"]',
-    /* Generic patterns */
+    /* Standard ARIA role for chat message lists */
+    '[role="listitem"] [dir]',
+    '[role="row"] [dir]',
+    /* Common class-name patterns used by chat UIs */
     '[class*="message"][class*="text"]',
+    '[class*="message"][class*="content"]',
     '[class*="msg"][class*="text"]',
     '[class*="chat"][class*="bubble"]',
-    '[role="row"] [dir]',
-    '.chatMessage',
-    '.message',
+    '[class*="bubble"]',
+    '[class*="chatMessage"]',
+    '[class*="message"]',
   ];
   for (const sel of candidates) {
     const els = document.querySelectorAll(sel);
@@ -493,19 +467,11 @@ def _js_inject_and_send(message: str,
         find_input = r"""
 (function() {
   const candidates = [
-    /* WhatsApp Web */
-    '[data-testid="conversation-compose-box-input"]',
-    /* Telegram Web */
-    '#editable-message-text',
-    /* Google Chat – contenteditable */
+    /* Prefer ARIA textbox roles (used by most modern chat UIs) */
     'div[contenteditable="true"][role="textbox"]',
-    /* Discord */
-    'div[class*="slateTextArea"]',
-    /* Slack */
-    'div[data-qa="message_input"]',
-    /* Messenger / generic */
-    'div[contenteditable="true"][data-tab]',
+    /* Generic contenteditable divs (common in chat apps) */
     'div[contenteditable="true"]',
+    /* Standard form elements */
     'textarea[placeholder*="message" i]',
     'textarea[placeholder*="chat" i]',
     'input[placeholder*="message" i]',
@@ -549,7 +515,7 @@ def _js_inject_and_send(message: str,
   }}
 
   // Wait ~300 ms before submitting.  This duration was determined empirically:
-  // messenger apps attach React/Vue input handlers that update their internal
+  // chat apps attach React/Vue input handlers that update their internal
   // state asynchronously; submitting too quickly (< ~200 ms) can cause the
   // sent message to be empty even though the DOM shows the injected text.
   await new Promise(r => setTimeout(r, 300));
@@ -614,7 +580,7 @@ def inject_message_and_wait(
         input_selector: Optional[str] = None,
         response_selector: Optional[str] = None,
         response_timeout: float = _DEFAULT_RESPONSE_TIMEOUT) -> str:
-    """Inject *message* into a messenger tab and return the reply.
+    """Inject *message* into a browser chat tab and return the reply.
 
     Steps:
       1. Discover tabs via Chrome's /json endpoint.
@@ -764,7 +730,7 @@ def run_interactive(port: int,
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog='browser_chat_cli',
-        description='Chat via an open browser messenger tab from the CLI.',
+        description='Chat via any open browser tab with a chat interface.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__)
 
@@ -776,8 +742,10 @@ def main(argv=None):
                               f'(default: {_DEFAULT_PORT})'))
     parser.add_argument('--tab',
                         metavar='PATTERN',
-                        help='URL/title substring to identify the target tab. '
-                        'If omitted, a known messenger tab is auto-detected.')
+                        help='URL or title substring to identify the target '
+                        'tab (case-insensitive).  Use --list-tabs to see '
+                        'available tabs.  If omitted, the first non-internal '
+                        'page tab is used.')
     parser.add_argument('--message',
                         '-m',
                         metavar='TEXT',

@@ -2,14 +2,14 @@
 
 ## Overview
 
-`browser_chat_cli` is a command-line tool for interacting with web-based
-messenger tabs in an already-running Chrome browser.  It connects to Chrome's
+`browser_chat_cli` is a command-line tool for interacting with the chat
+interface of any open browser tab.  It connects to Chrome's
 [Chrome DevTools Protocol (CDP)][cdp] endpoint, injects a text message into
-the chat input field of the target tab, sends it, and returns the reply once
+the chat input field of the selected tab, sends it, and returns the reply once
 it appears in the conversation.
 
-This makes it possible to chat from the terminal without leaving the browser
-session open in the foreground.
+This makes it possible to chat from the terminal after you have already logged
+into any web-based chat in the browser — no specific messenger is required.
 
 ---
 
@@ -23,7 +23,7 @@ chrome --remote-debugging-port=9222
 google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-debug
 ```
 
-Log into your messenger in the browser as usual.
+Log into your chat application in the browser as usual.
 
 ---
 
@@ -40,12 +40,21 @@ no additional packages need to be installed.
 python3 tools/browser_chat_cli/browser_chat_cli.py [OPTIONS]
 ```
 
-### Send a single message and print the response
+### Step 1 – find the right tab
+
+```sh
+python3 tools/browser_chat_cli/browser_chat_cli.py --list-tabs
+# Open tabs on port 9222:
+#   [0] 'My Chat App'
+#        https://mychat.example.com/
+```
+
+### Step 2 – send a message and print the response
 
 ```sh
 python3 tools/browser_chat_cli/browser_chat_cli.py \
     --message "Hello!" \
-    --tab "web.whatsapp.com"
+    --tab "mychat.example.com"
 ```
 
 ### Interactive (REPL) chat mode
@@ -53,16 +62,23 @@ python3 tools/browser_chat_cli/browser_chat_cli.py \
 ```sh
 python3 tools/browser_chat_cli/browser_chat_cli.py \
     --interactive \
-    --tab "web.telegram.org"
+    --tab "mychat.example.com"
 ```
 
 In this mode you type messages at the `You:` prompt and the tool prints the
-bot/contact reply after each message.  Type `exit` or press `Ctrl-C` to quit.
+reply after each message.  Type `exit` or press `Ctrl-C` to quit.
 
-### List all open tabs
+### Providing explicit CSS selectors
+
+If the generic heuristics don't locate the right elements, pass explicit CSS
+selectors:
 
 ```sh
-python3 tools/browser_chat_cli/browser_chat_cli.py --list-tabs
+python3 tools/browser_chat_cli/browser_chat_cli.py \
+    --message "Hi" \
+    --tab "mychat.example.com" \
+    --input-selector "div[contenteditable='true']" \
+    --response-selector ".message-text"
 ```
 
 ### Full options
@@ -70,7 +86,7 @@ python3 tools/browser_chat_cli/browser_chat_cli.py --list-tabs
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--port PORT` | `9222` | Chrome remote debugging port |
-| `--tab PATTERN` | auto | URL or title substring to pick the tab |
+| `--tab PATTERN` | first page tab | URL or title substring to pick the tab |
 | `--message TEXT` / `-m TEXT` | — | Message to send (required in single-shot mode) |
 | `--input-selector CSS` | auto | CSS selector for the chat input field |
 | `--response-selector CSS` | auto | CSS selector for response message elements |
@@ -84,43 +100,25 @@ python3 tools/browser_chat_cli/browser_chat_cli.py --list-tabs
 
 1. **Tab discovery** – The tool queries `http://localhost:<PORT>/json` to list
    all open browser tabs.
-2. **Tab selection** – The correct tab is found by matching `--tab` against
-   each tab's URL and title (case-insensitive substring match).  If `--tab`
-   is omitted, the tool auto-detects common messenger sites (WhatsApp Web,
-   Telegram Web, Messenger, Discord, Slack, …).
+2. **Tab selection** – Use `--tab` with any URL or title substring to select
+   the target tab (case-insensitive match).  If `--tab` is omitted, the first
+   non-internal page tab is used.
 3. **WebSocket CDP session** – A raw WebSocket connection is opened to the
    tab's `webSocketDebuggerUrl`.
 4. **Snapshot** – The current chat messages are snapshotted before injection,
    so only genuinely new messages are reported as the reply.
 5. **Injection** – JavaScript is evaluated in the tab via `Runtime.evaluate`:
-   - The chat input field is located (using the `--input-selector` CSS
-     selector or a list of well-known heuristics).
+   - The chat input field is located using the `--input-selector` CSS
+     selector, or through generic heuristics (ARIA textbox roles,
+     `contenteditable` divs, `<textarea>`, `<input type="text">`).
    - Text is inserted using `document.execCommand('insertText', …)` for
-     `contenteditable` fields (WhatsApp, Telegram, …) or the native value
-     setter + `input` event for `<input>` / `<textarea>` elements.
+     `contenteditable` fields or the native value setter + `input` event for
+     `<input>` / `<textarea>` elements.
    - An `Enter` `KeyboardEvent` is dispatched and any visible "Send" button
      is clicked.
 6. **Response detection** – The tool polls the tab every 250 ms, re-evaluating
    the message snapshot expression.  The first new non-empty message text is
    returned as the reply.
-
----
-
-## Supported messengers
-
-The heuristics work out of the box with:
-
-- **WhatsApp Web** (`web.whatsapp.com`)
-- **Telegram Web** (`web.telegram.org`)
-- **Facebook Messenger** (`messenger.com`)
-- **Discord** (`discord.com`)
-- **Slack** (`slack.com`)
-- **Microsoft Teams** (`teams.microsoft.com`)
-- **Google Chat** (`chat.google.com`)
-- **Element / Matrix** (`element.io`, `matrix.to`)
-
-For any other messenger, provide explicit `--input-selector` and
-`--response-selector` CSS selectors.
 
 ---
 

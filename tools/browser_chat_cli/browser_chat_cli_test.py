@@ -71,14 +71,15 @@ class FindTabTest(unittest.TestCase):
         result = cli.find_tab(tabs, 'nonexistent-pattern-xyz')
         self.assertIsNone(result)
 
-    def test_auto_detect_known_messenger(self):
+    def test_auto_detect_returns_first_non_internal_page(self):
         tabs = [
             self._make_tab('https://news.ycombinator.com/'),
-            self._make_tab('https://web.telegram.org/k/', title='Telegram'),
+            self._make_tab('https://example.com/chat'),
         ]
         result = cli.find_tab(tabs)
         self.assertIsNotNone(result)
-        self.assertIn('telegram', result['url'])
+        # Should pick the first non-internal page — not a specific messenger.
+        self.assertEqual(result['url'], 'https://news.ycombinator.com/')
 
     def test_auto_detect_falls_back_to_first_page(self):
         tabs = [
